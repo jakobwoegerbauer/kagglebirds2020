@@ -1,0 +1,1 @@
+experiments/train_openmic2018.sh --cuda-device=0 --var data.num_workers=6 --var data.pin_memory=1

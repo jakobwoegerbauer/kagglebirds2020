@@ -34,10 +34,14 @@ train() {
 	done
 }
 
-
-# all defaults
 data="--var dataset=openmic2018"
 model=
-metrics="--var metrics=_ce:multilabel_crossentropy,acc:multilabel_accuracy,prec:binary_precision,rec:binary_recall,spec:binary_specificity"
+metrics=
 training=
-train 7 vanilla/defaults $data $model $metrics $training "$@"
+train 1 v2/default $data $model $metrics $training "$@"
+
+data="--var dataset=openmic2018 --var data.audio_dir=audio/000"
+model=
+metrics=
+training="--var train.epochs=20 --var train.epochsize=100"
+train 1 v2/overfit-test $data $model $metrics $training "$@"

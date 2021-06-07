@@ -338,11 +338,39 @@ def binary_precision(preds, targets, pred_name='output', target_name='mask'):
     """
     preds = preds[pred_name]
     gt = (targets[target_name] > 0)
+    valid = (targets[target_name] != 255)
     preds = (preds > 0)
-    true_positives = spatial_sum(gt & preds)
-    predicted_positives = spatial_sum(preds)
+    true_positives = spatial_sum(gt & preds & valid)
+    predicted_positives = spatial_sum(preds & valid)
     return true_positives.float(), predicted_positives.float()
 
+IDX = 0
+
+def cnt_pred_true(preds, targets, pred_name='output', target_name='mask'):
+    preds = preds[pred_name]
+    valid = (targets[target_name] != 255)
+    preds = (preds > 0)
+    return (valid[:,IDX] & preds[:,IDX]).sum(0)
+
+
+def cnt_pred_false(preds, targets, pred_name='output', target_name='mask'):
+    preds = preds[pred_name]
+    valid = (targets[target_name] != 255)
+    preds = (preds > 0)
+    return (valid[:,IDX] & ~preds[:,IDX]).sum(0)
+
+def cnt_gt_true(preds, targets, pred_name='output', target_name='mask'):
+    preds = preds[pred_name]
+    valid = (targets[target_name] != 255)
+    gt = (targets[target_name] > 0)
+    return (valid[:,IDX] & gt[:,IDX]).sum(0)
+
+
+def cnt_gt_false(preds, targets, pred_name='output', target_name='mask'):
+    preds = preds[pred_name]
+    valid = (targets[target_name] != 255)
+    gt = (targets[target_name] > 0)
+    return (valid[:,IDX] & ~gt[:,IDX]).sum(0)
 
 def binary_recall(preds, targets, pred_name='output', target_name='mask'):
     """
@@ -351,9 +379,10 @@ def binary_recall(preds, targets, pred_name='output', target_name='mask'):
     """
     preds = preds[pred_name]
     gt = (targets[target_name] > 0)
+    valid = (targets[target_name] != 255)
     preds = (preds > 0)
-    true_positives = spatial_sum(gt & preds)
-    labeled_positives = spatial_sum(gt)
+    true_positives = spatial_sum(gt & preds & valid)
+    labeled_positives = spatial_sum(gt & valid)
     return true_positives.float(), labeled_positives.float()
 
 

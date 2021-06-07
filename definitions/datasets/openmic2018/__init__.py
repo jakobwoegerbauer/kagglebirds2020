@@ -20,6 +20,7 @@ from ... import config
 from .. import Dataset, ClassWeightedRandomSampler
 from .. import audio
 from .. import splitting
+from .. import kagglebirds2020
 
 
 def common_shape(arrays):
@@ -45,9 +46,9 @@ class OpenmicDataset(Dataset):
             if 'label_all' in annotations:
                 shapes['label_all'] = (num_classes,)
                 dtypes['label_all'] = np.float32
-            if 'rating' in annotations:
-                shapes['rating'] = ()
-                dtypes['rating'] = np.float32
+            if 'label_mask' in annotations:
+                shapes['label_mask'] = ()
+                dtypes['label_mask'] = np.float32
 
         super(OpenmicDataset, self).__init__(
             shapes=shapes,
@@ -68,143 +69,6 @@ class OpenmicDataset(Dataset):
             if key not in item:
                 item[key] = self.annotations[key][idx]
         # return
-        return item
-
-
-class DownmixChannels(Dataset):
-    """
-    Dataset wrapper that downmixes multichannel audio to mono, either
-    deterministically (method='average') or randomly (method='random_uniform').
-    """
-
-    def __init__(self, dataset, key='input', axis=0, method='average'):
-        shapes = dict(dataset.shapes)
-        shape = list(shapes[key])
-        shape[axis] = 1
-        shapes[key] = tuple(shape)
-        super(DownmixChannels, self).__init__(
-            shapes=shapes, dtypes=dataset.dtypes,
-            num_classes=dataset.num_classes, num_items=len(dataset))
-        self.dataset = dataset
-        self.key = key
-        self.axis = axis
-        self.method = method
-
-    def __getattr__(self, attr):
-        return getattr(self.dataset, attr)
-
-    def __getitem__(self, idx):
-        item = dict(self.dataset[idx])
-        wav = item[self.key]
-        num_channels = wav.shape[self.axis]
-        if num_channels > 1:
-            if self.method == 'average':
-                wav = np.mean(wav, axis=self.axis, keepdims=True)
-            elif self.method == 'random_uniform':
-                weights = np.random.dirichlet(np.ones(num_channels))
-                weights = weights.astype(wav.dtype)
-                if self.axis == -1 or self.axis == len(wav.shape) - 1:
-                    wav = np.dot(wav, weights)[..., np.newaxis]
-                else:
-                    weights = weights.reshape(weights.shape +
-                                              (1,) *
-                                              (len(wav.shape[self.axis:]) - 1))
-                    wav = (wav * weights).sum(self.axis, keepdims=True)
-        item[self.key] = wav
-        return item
-
-
-def loop(array, length):
-    """
-    Loops a given `array` along its first axis to reach a length of `length`.
-    """
-    if len(array) < length:
-        array = np.asanyarray(array)
-        if len(array) == 0:
-            return np.zeros((length,) + array.shape[1:], dtype=array.dtype)
-        factor = length // len(array)
-        if factor > 1:
-            array = np.tile(array, (factor,) + (1,) * (array.ndim - 1))
-        missing = length - len(array)
-        if missing:
-            array = np.concatenate((array, array[:missing:]))
-    return array
-
-
-def crop(array, length, deterministic=False):
-    """
-    Crops a random excerpt of `length` along the first axis of `array`. If
-    `deterministic`, perform a center crop instead.
-    """
-    if len(array) > length:
-        if not deterministic:
-            pos = np.random.randint(len(array) - length + 1)
-            array = array[pos:pos + length:]
-        else:
-            l = len(array)
-            array = array[(l - length) // 2:(l + length) // 2]
-    return array
-
-
-class FixedSizeExcerpts(Dataset):
-    """
-    Dataset wrapper that returns batches of random excerpts of the same length,
-    cropping or looping inputs along the first axis as needed. If
-    `deterministic`, will always do a center crop for too long inputs.
-    """
-    def __init__(self, dataset, length, deterministic=False, key='input'):
-        shapes = dict(dataset.shapes)
-        shapes[key] = (length,) + shapes[key][1:]
-        super(FixedSizeExcerpts, self).__init__(
-                shapes=shapes, dtypes=dataset.dtypes,
-                num_classes=dataset.num_classes, num_items=len(dataset))
-        self.dataset = dataset
-        self.length = length
-        self.deterministic = deterministic
-        self.key = key
-
-    def __getattr__(self, attr):
-        return getattr(self.dataset, attr)
-
-    def __getitem__(self, idx):
-        item = dict(self.dataset[idx])
-        data = item[self.key]
-        if len(data) < self.length:
-            data = loop(data, self.length)
-        elif len(data) > self.length:
-            data = crop(data, self.length, deterministic=self.deterministic)
-        item[self.key] = data
-        return item
-
-
-class Floatify(Dataset):
-    """
-    Dataset wrapper that converts audio samples to float32 with proper scaling,
-    possibly transposing the data on the way to swap time and channels.
-    """
-
-    def __init__(self, dataset, transpose=False, key='input'):
-        dtypes = dict(dataset.dtypes)
-        dtypes[key] = np.float32
-        shapes = dict(dataset.shapes)
-        if transpose:
-            shapes[key] = shapes[key][::-1]
-        super(Floatify, self).__init__(
-            shapes=shapes, dtypes=dtypes,
-            num_classes=dataset.num_classes, num_items=len(dataset))
-        self.dataset = dataset
-        self.transpose = transpose
-        self.key = key
-
-    def __getattr__(self, attr):
-        return getattr(self.dataset, attr)
-
-    def __getitem__(self, idx):
-        item = dict(self.dataset[idx])
-        data = item[self.key]
-        if self.transpose:
-            data = np.asanyarray(data).T
-        item[self.key] = audio.to_float(data)
         return item
 
 
@@ -257,18 +121,22 @@ def create(cfg, designation):
     d = {
         'sample_key': list(data['sample_key']),
         'label_all': list(data['Y_true']),
-        'y_mask': list(data['Y_mask'])
+        'label_mask': list(data['Y_mask'])
     }
     train_csv = pd.DataFrame(d, index=d['sample_key'])
-    labels = pd.DataFrame({'label_all': d['label_all']}, index=d['sample_key'])
+    annotations = pd.DataFrame(
+        {'label_all': d['label_all'], 'label_mask': d['label_mask']}, index=d['sample_key'])
+    ignore = ~np.stack(annotations.label_mask)
+    labels = np.stack(annotations.label_all)
+    labels = np.round(labels)
+    labels[ignore] = 255
+    annotations.label_all = pd.Series(list(labels), index=annotations.index)
 
     with open(os.path.join(os.path.join(here, cfg['data.label-map'])), 'r') as f:
         class_map = json.load(f)
 
     # derive set of labels, ordered by latin names
     labelset_ebird = class_map.keys()
-    ebird_to_idx = class_map
-    num_classes = len(labelset_ebird)
 
     # for training and validation, read and convert all required labels
     if designation in ('train', 'valid'):
@@ -311,22 +179,32 @@ def create(cfg, designation):
               for fn in tqdm.tqdm(audio_files, 'Reading audio',
                                   ascii=bool(cfg['tqdm.ascii']))]
     # create the dataset
-    dataset = OpenmicDataset(itemids, audios, labelset_ebird, annotations=labels)
+    dataset = OpenmicDataset(
+        itemids, audios, labelset_ebird, annotations=annotations)
 
     # unified length, if needed
     if cfg['data.len_min'] < cfg['data.len_max']:
-        raise NotImplementedError("data.len_min < data.len_max not allowed yet")
+        raise NotImplementedError(
+            "data.len_min < data.len_max not allowed yet")
     elif cfg['data.len_max'] > 0:
-        dataset = FixedSizeExcerpts(dataset,
-                                    int(sample_rate * cfg['data.len_min']),
-                                    deterministic=designation != 'train')
+        dataset = kagglebirds2020.FixedSizeExcerpts(dataset,
+                                                    int(sample_rate *
+                                                        cfg['data.len_min']),
+                                                    deterministic=designation != 'train')
 
     # convert to float and move channel dimension to the front
-    dataset = Floatify(dataset, transpose=True)
+    dataset = kagglebirds2020.Floatify(dataset, transpose=True)
 
-    dataset = DownmixChannels(dataset,
-                              method=(cfg['data.downmix']
-                                      if designation == 'train'
-                                      else 'average'))
+    dataset = kagglebirds2020.DownmixChannels(dataset,
+                                              method=(cfg['data.downmix']
+                                                      if designation == 'train'
+                                                      else 'average'))
+
+    if cfg['data.class_sample_weights'] and designation == 'train':
+        class_weights = cfg['data.class_sample_weights']
+        if class_weights not in ('equal', 'roundrobin'):
+            class_weights = list(map(float, class_weights.split(',')))
+        dataset.sampler = kagglebirds2020.ClassWeightedRandomSampler(train_csv.label_all,
+                                                     class_weights)
 
     return dataset
